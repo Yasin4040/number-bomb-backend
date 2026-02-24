@@ -197,9 +197,9 @@ public class GameService {
     }
     
     /**
-     * 计算AB结果（猜数字模式：4位不重复数字）
-     * @param secret 正确答案（4位不重复数字）
-     * @param guess 玩家猜测（4位不重复数字）
+     * 计算AB结果（猜数字模式：4位数字，允许重复）
+     * @param secret 正确答案（4位数字，允许重复）
+     * @param guess 玩家猜测（4位数字，允许重复）
      * @return { a: number, b: number } A=数字和位置都对，B=数字对但位置错
      */
     private Map<String, Integer> calculateAB(String secret, String guess) {
@@ -211,34 +211,30 @@ public class GameService {
         
         // 先计算A（位置和数字都对）
         boolean[] matchedPositions = new boolean[4];
+        boolean[] matchedInSecret = new boolean[4];
+        
         for (int i = 0; i < 4; i++) {
             if (secretChars[i] == guessChars[i]) {
                 a++;
                 matchedPositions[i] = true;
+                matchedInSecret[i] = true;
             }
         }
         
         // 计算B（数字对但位置错）
-        // 需要排除已经匹配的位置
-        Map<Character, Integer> secretCount = new HashMap<>();
-        Map<Character, Integer> guessCount = new HashMap<>();
-        
+        // 对于每个未匹配位置的猜测数字，检查是否在秘密数字的未匹配位置中存在
         for (int i = 0; i < 4; i++) {
             if (!matchedPositions[i]) {
-                char secretChar = secretChars[i];
                 char guessChar = guessChars[i];
-                
-                secretCount.put(secretChar, secretCount.getOrDefault(secretChar, 0) + 1);
-                guessCount.put(guessChar, guessCount.getOrDefault(guessChar, 0) + 1);
+                // 在秘密数字的未匹配位置中查找
+                for (int j = 0; j < 4; j++) {
+                    if (!matchedInSecret[j] && secretChars[j] == guessChar) {
+                        b++;
+                        matchedInSecret[j] = true;
+                        break; // 每个猜测数字只能匹配一次
+                    }
+                }
             }
-        }
-        
-        // 计算B：对于每个数字，取secret和guess中较小的计数
-        for (Map.Entry<Character, Integer> entry : secretCount.entrySet()) {
-            char digit = entry.getKey();
-            int secretCnt = entry.getValue();
-            int guessCnt = guessCount.getOrDefault(digit, 0);
-            b += Math.min(secretCnt, guessCnt);
         }
         
         Map<String, Integer> result = new HashMap<>();
@@ -249,17 +245,9 @@ public class GameService {
     
     @Transactional
     public Map<String, Object> makeGuess(Long gameId, Long userId, String guess) {
-        // 验证猜测格式（4位不重复数字）
-        if (guess == null || guess.length() != 4 || !guess.matches("^[1-9]\\d{3}$")) {
-            throw new RuntimeException("请输入4位不重复数字");
-        }
-        
-        // 检查数字是否重复
-        Set<Character> digits = new HashSet<>();
-        for (char c : guess.toCharArray()) {
-            if (!digits.add(c)) {
-                throw new RuntimeException("数字不能重复");
-            }
+        // 验证猜测格式（4位数字，允许重复，允许0开头）
+        if (guess == null || guess.length() != 4 || !guess.matches("^\\d{4}$")) {
+            throw new RuntimeException("请输入4位数字");
         }
         
         // 从Redis获取游戏状态
@@ -508,16 +496,29 @@ public class GameService {
         List<GameAction> actions = gameActionMapper.selectList(wrapper);
         
         // 获取玩家信息映射（用于填充playerName）
+        // 从数据库获取最新的用户信息，确保昵称是最新的
         List<Map<String, Object>> players = (List<Map<String, Object>>) gameState.get("players");
         Map<Long, String> playerNameMap = new HashMap<>();
         if (players != null) {
             for (Map<String, Object> player : players) {
                 Long playerId = ((Number) player.get("id")).longValue();
-                String nickname = (String) player.get("nickname");
-                if (nickname != null) {
-                    playerNameMap.put(playerId, nickname);
+                // 从数据库获取最新的用户信息（确保昵称是最新的）
+                User user = userMapper.selectById(playerId);
+                if (user != null && user.getNickname() != null) {
+                    String latestNickname = user.getNickname();
+                    playerNameMap.put(playerId, latestNickname);
+                    // 同时更新游戏状态中的玩家昵称（确保一致性）
+                    player.put("nickname", latestNickname);
+                } else {
+                    // 如果数据库中没有，使用游戏状态中的昵称
+                    String nickname = (String) player.get("nickname");
+                    if (nickname != null) {
+                        playerNameMap.put(playerId, nickname);
+                    }
                 }
             }
+            // 更新游戏状态中的玩家列表（包含最新昵称）
+            gameState.put("players", players);
         }
         
         List<Map<String, Object>> history = actions.stream().map(action -> {

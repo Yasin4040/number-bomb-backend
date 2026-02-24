@@ -154,6 +154,32 @@ public class RoomController {
         return Result.success();
     }
     
+    @PostMapping("/update-nickname")
+    public Result<?> updateNickname(@RequestBody UpdateNicknameDTO dto, HttpServletRequest request) {
+        Long userId = (Long) request.getAttribute("userId");
+        String tempUserId = (String) request.getAttribute("tempUserId");
+        
+        // 如果是临时用户，先获取或创建用户
+        if (userId == null && tempUserId != null && !tempUserId.isEmpty()) {
+            userId = roomService.getOrCreateTempUser(tempUserId, request);
+        }
+        
+        if (userId == null) {
+            return Result.error(401, "无法获取用户ID");
+        }
+        
+        if (dto.getNickname() == null || dto.getNickname().trim().isEmpty()) {
+            return Result.error(400, "昵称不能为空");
+        }
+        
+        if (dto.getNickname().length() > 12) {
+            return Result.error(400, "昵称不能超过12个字符");
+        }
+        
+        roomService.updateUserNickname(userId, dto.getNickname().trim());
+        return Result.success();
+    }
+    
     @lombok.Data
     public static class JoinRoomDTO {
         private String roomCode;
@@ -186,5 +212,10 @@ public class RoomController {
     public static class EmojiDTO {
         private Long roomId;
         private String emoji;
+    }
+    
+    @lombok.Data
+    public static class UpdateNicknameDTO {
+        private String nickname;
     }
 }

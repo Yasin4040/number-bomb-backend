@@ -35,24 +35,76 @@ public class RoomService {
     /**
      * 获取或创建临时用户
      * 
-     * 重要：为了确保每个浏览器session都有独立的用户，我们为每个新的tempUserId创建新用户。
-     * 前端已经确保每个session都生成唯一的tempUserId（包含时间戳、随机数、crypto随机值等），
-     * 所以这里应该总是创建新用户，而不是查找已存在的用户。
+     * 先尝试根据 openid 查询用户是否存在，如果存在则直接返回。
+     * 如果不存在，则创建新用户。如果创建时遇到唯一约束冲突（openid 已存在），
+     * 则再次查询并返回已存在的用户。
      * 
-     * 这样可以避免同一台电脑的不同浏览器session（包括无痕模式）共享同一个用户。
+     * 注意：数据库 openid 字段为 VARCHAR(64)，如果 tempUserId 超过 64 个字符会被截断。
+     * 因此需要同时检查完整 tempUserId 和截断后的 tempUserId。
+     * 
+     * 这样可以避免：
+     * 1. 数据库字段长度限制导致 openid 截断后的重复键错误
+     * 2. 同一 tempUserId 被多次使用时重复创建用户
      */
     @Transactional
     public Long getOrCreateTempUser(String tempUserId, HttpServletRequest request) {
-        // 由于前端已经确保每个session都有唯一的tempUserId，我们总是创建新用户
-        // 这样可以确保：
-        // 1. 无痕模式和普通模式有独立的用户
-        // 2. 不同浏览器有独立的用户
-        // 3. 同一浏览器的不同标签页（如果sessionStorage独立）有独立的用户
+        // 调试日志：记录接收到的临时用户ID
+        System.out.println("🔍 [getOrCreateTempUser] 接收到临时用户ID: " + tempUserId);
+        System.out.println("🔍 [getOrCreateTempUser] 请求IP: " + getClientIp(request));
         
-        // 注意：如果将来需要支持"刷新页面保持同一用户"的功能，可以在这里添加查找逻辑
-        // 但当前为了确保多session支持，我们选择总是创建新用户
+        // openid 字段最大长度为 64，如果 tempUserId 超过此长度会被截断
+        final int MAX_OPENID_LENGTH = 64;
+        String truncatedOpenid = tempUserId.length() > MAX_OPENID_LENGTH 
+                ? tempUserId.substring(0, MAX_OPENID_LENGTH) 
+                : tempUserId;
         
-        // 创建新的临时用户
+        // 先尝试根据完整的 openid 查询用户是否存在
+        LambdaQueryWrapper<User> wrapper = new LambdaQueryWrapper<>();
+        wrapper.eq(User::getOpenid, tempUserId);
+        User existingUser = userMapper.selectOne(wrapper);
+        
+        // 如果完整查询没找到，且 tempUserId 可能被截断，尝试用截断后的值查询
+        if (existingUser == null && tempUserId.length() > MAX_OPENID_LENGTH) {
+            LambdaQueryWrapper<User> truncatedWrapper = new LambdaQueryWrapper<>();
+            truncatedWrapper.eq(User::getOpenid, truncatedOpenid);
+            existingUser = userMapper.selectOne(truncatedWrapper);
+            if (existingUser != null) {
+                System.out.println("⚠️ [getOrCreateTempUser] 使用截断后的 openid 找到用户: " + truncatedOpenid);
+            }
+        }
+        
+        if (existingUser != null) {
+            // 用户已存在，检查是否需要更新昵称
+            String tempNickname = (String) request.getAttribute("tempNickname");
+            boolean needUpdate = false;
+            
+            // 如果前端传入了新昵称，且与数据库中的昵称不同，则更新
+            if (tempNickname != null && !tempNickname.isEmpty() && 
+                !tempNickname.equals(existingUser.getNickname())) {
+                // 检查新昵称是否与其他用户冲突
+                LambdaQueryWrapper<User> nicknameWrapper = new LambdaQueryWrapper<>();
+                nicknameWrapper.eq(User::getNickname, tempNickname)
+                              .ne(User::getId, existingUser.getId());
+                User existingNickname = userMapper.selectOne(nicknameWrapper);
+                
+                if (existingNickname == null) {
+                    // 新昵称可用，更新
+                    existingUser.setNickname(tempNickname);
+                    needUpdate = true;
+                    System.out.println("✅ [getOrCreateTempUser] 更新用户昵称: " + existingUser.getNickname() + " -> " + tempNickname);
+                } else {
+                    System.out.println("⚠️ [getOrCreateTempUser] 昵称已存在，保持原昵称: " + existingUser.getNickname());
+                }
+            }
+            
+            // 更新最后登录时间
+            existingUser.setLastLogin(LocalDateTime.now());
+            userMapper.updateById(existingUser);
+            System.out.println("✅ [getOrCreateTempUser] 找到已存在的用户: 数据库ID=" + existingUser.getId() + ", 临时ID=" + tempUserId + ", 昵称=" + existingUser.getNickname());
+            return existingUser.getId();
+        }
+        
+        // 用户不存在，创建新用户
         // 优先使用前端传来的临时昵称，否则生成默认昵称
         String nickname;
         String tempNickname = (String) request.getAttribute("tempNickname");
@@ -74,7 +126,8 @@ public class RoomService {
         }
         
         User tempUser = new User();
-        tempUser.setOpenid(tempUserId);
+        // 如果 tempUserId 超过 64 个字符，使用截断后的值
+        tempUser.setOpenid(truncatedOpenid);
         tempUser.setNickname(nickname);
         tempUser.setAvatarUrl(""); // 临时用户没有头像
         tempUser.setTotalGames(0);
@@ -85,9 +138,45 @@ public class RoomService {
         tempUser.setCurrentStreak(0);
         tempUser.setLastLogin(LocalDateTime.now());
         
-        userMapper.insert(tempUser);
-        System.out.println("创建新的临时用户: " + tempUser.getId() + ", 昵称: " + nickname);
-        return tempUser.getId();
+        try {
+            userMapper.insert(tempUser);
+            System.out.println("✅ [getOrCreateTempUser] 创建新的临时用户: 数据库ID=" + tempUser.getId() + ", 临时ID=" + tempUserId + ", 存储的openid=" + truncatedOpenid + ", 昵称=" + nickname);
+            return tempUser.getId();
+        } catch (Exception e) {
+            // 如果插入时遇到唯一约束冲突（可能是 openid 字段被截断导致），
+            // 再次查询并返回已存在的用户
+            if (e.getMessage() != null && e.getMessage().contains("Duplicate entry")) {
+                System.out.println("⚠️ [getOrCreateTempUser] 检测到重复键错误，尝试查询已存在的用户: " + e.getMessage());
+                // 使用截断后的 openid 查询
+                LambdaQueryWrapper<User> duplicateWrapper = new LambdaQueryWrapper<>();
+                duplicateWrapper.eq(User::getOpenid, truncatedOpenid);
+                User duplicateUser = userMapper.selectOne(duplicateWrapper);
+                if (duplicateUser != null) {
+                    // 检查是否需要更新昵称（与上面逻辑相同）
+                    tempNickname = (String) request.getAttribute("tempNickname");
+                    if (tempNickname != null && !tempNickname.isEmpty() && 
+                        !tempNickname.equals(duplicateUser.getNickname())) {
+                        nicknameWrapper = new LambdaQueryWrapper<>();
+                        nicknameWrapper.eq(User::getNickname, tempNickname)
+                                      .ne(User::getId, duplicateUser.getId());
+                        existingNickname = userMapper.selectOne(nicknameWrapper);
+                        
+                        if (existingNickname == null) {
+                            duplicateUser.setNickname(tempNickname);
+                            System.out.println("✅ [getOrCreateTempUser] 更新用户昵称（重复键处理）: " + duplicateUser.getNickname() + " -> " + tempNickname);
+                        }
+                    }
+                    
+                    // 更新最后登录时间
+                    duplicateUser.setLastLogin(LocalDateTime.now());
+                    userMapper.updateById(duplicateUser);
+                    System.out.println("✅ [getOrCreateTempUser] 找到已存在的用户（重复键处理）: 数据库ID=" + duplicateUser.getId() + ", 临时ID=" + tempUserId + ", 存储的openid=" + truncatedOpenid + ", 昵称=" + duplicateUser.getNickname());
+                    return duplicateUser.getId();
+                }
+            }
+            // 如果是其他异常，重新抛出
+            throw new RuntimeException("创建临时用户失败: " + e.getMessage(), e);
+        }
     }
     
     @Transactional
@@ -117,69 +206,87 @@ public class RoomService {
         owner.setIsReady(0);
         roomPlayerMapper.insert(owner);
         
-        return convertRoomToMap(room);
+        Map<String, Object> result = convertRoomToMap(room);
+        // 添加当前用户ID（用于前端识别）
+        result.put("currentUserId", userId);
+        
+        return result;
     }
-    
+
     @Transactional
     public Map<String, Object> joinRoom(Long userId, String roomCode) {
         // 查找房间
         LambdaQueryWrapper<Room> wrapper = new LambdaQueryWrapper<>();
         wrapper.eq(Room::getRoomCode, roomCode)
-                .eq(Room::getStatus, 0);
+                .in(Room::getStatus, 0,1);
         Room room = roomMapper.selectOne(wrapper);
-        
+
         if (room == null) {
-            throw new RuntimeException("房间不存在或已开始");
+            throw new RuntimeException("房间不存在");
         }
-        
+
+        // 检查房间是否过期
         if (room.getExpiredAt() != null && room.getExpiredAt().isBefore(LocalDateTime.now())) {
             throw new RuntimeException("房间已过期");
         }
-        
+
         // 检查是否已加入
         LambdaQueryWrapper<RoomPlayer> playerWrapper = new LambdaQueryWrapper<>();
         playerWrapper.eq(RoomPlayer::getRoomId, room.getId())
                 .eq(RoomPlayer::getUserId, userId);
         RoomPlayer existing = roomPlayerMapper.selectOne(playerWrapper);
-        
+
+        boolean isReconnect = false;
         if (existing != null) {
-            throw new RuntimeException("您已在房间中");
+            // 用户已在房间中，视为断线重连
+            isReconnect = true;
+            System.out.println("ℹ️ [joinRoom] 用户已在房间中，执行重连逻辑: userId=" + userId + ", roomCode=" + roomCode);
+
+            // 重连时更新房间过期时间（延长有效期）
+            room.setExpiredAt(LocalDateTime.now().plusMinutes(expireMinutes));
+            roomMapper.updateById(room);
+            System.out.println("ℹ️ [joinRoom] 重连成功，更新房间过期时间: roomId=" + room.getId() + ", newExpiredAt=" + room.getExpiredAt());
+        } else {
+            // 检查房间人数
+            LambdaQueryWrapper<RoomPlayer> countWrapper = new LambdaQueryWrapper<>();
+            countWrapper.eq(RoomPlayer::getRoomId, room.getId());
+            long playerCount = roomPlayerMapper.selectCount(countWrapper);
+
+            if (playerCount >= 2) {
+                throw new RuntimeException("房间已满");
+            }
+
+            // 加入房间
+            RoomPlayer player = new RoomPlayer();
+            player.setRoomId(room.getId());
+            player.setUserId(userId);
+            player.setIsOwner(0);
+            player.setIsReady(0);
+            roomPlayerMapper.insert(player);
+
+            // 获取玩家信息用于推送
+            User user = userMapper.selectById(userId);
+            Map<String, Object> playerInfo = new HashMap<>();
+            if (user != null) {
+                playerInfo.put("id", user.getId());
+                playerInfo.put("nickname", user.getNickname());
+                playerInfo.put("avatarUrl", user.getAvatarUrl() != null ? user.getAvatarUrl() : "");
+            }
+
+            // 通过WebSocket通知房间内其他玩家（仅首次加入时推送）
+            webSocketService.notifyPlayerJoined(room.getId(), playerInfo);
+            System.out.println("✅ [joinRoom] 玩家首次加入房间: userId=" + userId + ", roomCode=" + roomCode);
         }
-        
-        // 检查房间人数
-        LambdaQueryWrapper<RoomPlayer> countWrapper = new LambdaQueryWrapper<>();
-        countWrapper.eq(RoomPlayer::getRoomId, room.getId());
-        long playerCount = roomPlayerMapper.selectCount(countWrapper);
-        
-        if (playerCount >= 2) {
-            throw new RuntimeException("房间已满");
-        }
-        
-        // 加入房间
-        RoomPlayer player = new RoomPlayer();
-        player.setRoomId(room.getId());
-        player.setUserId(userId);
-        player.setIsOwner(0);
-        player.setIsReady(0);
-        roomPlayerMapper.insert(player);
-        
-        // 获取玩家信息用于推送
-        User user = userMapper.selectById(userId);
-        Map<String, Object> playerInfo = new HashMap<>();
-        if (user != null) {
-            playerInfo.put("id", user.getId());
-            playerInfo.put("nickname", user.getNickname());
-            playerInfo.put("avatarUrl", user.getAvatarUrl() != null ? user.getAvatarUrl() : "");
-        }
-        
-        // 通过WebSocket通知房间内其他玩家
-        webSocketService.notifyPlayerJoined(room.getId(), playerInfo);
-        
-        // 返回房间信息和玩家列表
+
+        // 返回房间信息和玩家列表（重连和首次加入返回相同格式）
         Map<String, Object> result = new HashMap<>();
         result.put("room", convertRoomToMap(room));
         result.put("players", getRoomPlayers(room.getId()));
-        
+        // 添加当前用户ID（用于前端识别）
+        result.put("currentUserId", userId);
+        // 添加重连标识，方便前端区分是首次加入还是重连
+        result.put("isReconnect", isReconnect);
+
         return result;
     }
     
@@ -451,5 +558,48 @@ public class RoomService {
             }
             return playerMap;
         }).collect(Collectors.toList());
+    }
+    
+    /**
+     * 更新用户昵称
+     */
+    public void updateUserNickname(Long userId, String nickname) {
+        User user = userMapper.selectById(userId);
+        if (user == null) {
+            throw new RuntimeException("用户不存在");
+        }
+        
+        // 检查昵称是否与其他用户冲突
+        LambdaQueryWrapper<User> nicknameWrapper = new LambdaQueryWrapper<>();
+        nicknameWrapper.eq(User::getNickname, nickname)
+                      .ne(User::getId, userId);
+        User existingNickname = userMapper.selectOne(nicknameWrapper);
+        
+        if (existingNickname != null) {
+            throw new RuntimeException("昵称已被使用");
+        }
+        
+        // 更新昵称
+        user.setNickname(nickname);
+        userMapper.updateById(user);
+        System.out.println("✅ [updateUserNickname] 更新用户昵称: userId=" + userId + ", nickname=" + nickname);
+    }
+    
+    /**
+     * 获取客户端IP地址（用于调试）
+     */
+    private String getClientIp(HttpServletRequest request) {
+        String ip = request.getHeader("X-Forwarded-For");
+        if (ip == null || ip.isEmpty() || "unknown".equalsIgnoreCase(ip)) {
+            ip = request.getHeader("X-Real-IP");
+        }
+        if (ip == null || ip.isEmpty() || "unknown".equalsIgnoreCase(ip)) {
+            ip = request.getRemoteAddr();
+        }
+        // 处理多个IP的情况，取第一个
+        if (ip != null && ip.contains(",")) {
+            ip = ip.split(",")[0].trim();
+        }
+        return ip != null ? ip : "0.0.0.0";
     }
 }

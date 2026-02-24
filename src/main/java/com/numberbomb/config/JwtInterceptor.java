@@ -64,16 +64,16 @@ public class JwtInterceptor implements HandlerInterceptor {
                         // 使用前端传来的临时用户ID
                         request.setAttribute("tempUserId", tempUserId);
                         request.setAttribute("userId", null); // 标记为临时用户
-                        System.out.println("✅ [房间/游戏接口] 使用前端传来的临时用户ID: " + tempUserId);
+                        System.out.println("✅ [JwtInterceptor] 使用前端传来的临时用户ID: " + tempUserId + ", URL: " + path);
                     } else {
                         // 如果不是标准格式，仍然使用，但记录警告
                         request.setAttribute("tempUserId", tempUserId);
                         request.setAttribute("userId", null);
-                        System.out.println("⚠️ [房间/游戏接口] 收到非标准格式的临时用户ID: " + tempUserId);
+                        System.out.println("⚠️ [JwtInterceptor] 收到非标准格式的临时用户ID: " + tempUserId + ", URL: " + path);
                     }
                 } else {
                     // 如果没有临时用户ID，返回错误（不再自动生成，强制前端提供）
-                    System.out.println("❌ [房间/游戏接口] 未提供临时用户ID，请求将被拒绝");
+                    System.out.println("❌ [JwtInterceptor] 未提供临时用户ID，请求将被拒绝, URL: " + path);
                     // 注意：这里不返回false，让Controller处理错误
                 }
                 

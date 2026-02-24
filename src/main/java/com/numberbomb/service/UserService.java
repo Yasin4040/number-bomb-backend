@@ -105,4 +105,29 @@ public class UserService {
         
         return result;
     }
+    
+    /**
+     * 更新用户昵称
+     */
+    public void updateNickname(Long userId, String nickname) {
+        User user = userMapper.selectById(userId);
+        if (user == null) {
+            throw new RuntimeException("用户不存在");
+        }
+        
+        // 检查昵称是否与其他用户冲突
+        LambdaQueryWrapper<User> nicknameWrapper = new LambdaQueryWrapper<>();
+        nicknameWrapper.eq(User::getNickname, nickname)
+                      .ne(User::getId, userId);
+        User existingNickname = userMapper.selectOne(nicknameWrapper);
+        
+        if (existingNickname != null) {
+            throw new RuntimeException("昵称已被使用");
+        }
+        
+        // 更新昵称
+        user.setNickname(nickname);
+        userMapper.updateById(user);
+        System.out.println("✅ [updateNickname] 更新用户昵称: userId=" + userId + ", nickname=" + nickname);
+    }
 }
