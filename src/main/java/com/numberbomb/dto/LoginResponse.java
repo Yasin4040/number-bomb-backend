@@ -10,6 +10,7 @@ public class LoginResponse {
     @Data
     public static class UserVO {
         private Long id;
+        private String username;
         private String nickname;
         private String avatarUrl;
         private Integer rankLevel;

@@ -198,6 +198,11 @@ public class RoomService {
         room.setExpiredAt(LocalDateTime.now().plusMinutes(expireMinutes));
         roomMapper.insert(room);
         
+        // 检查房间ID是否生成成功
+        if (room.getId() == null) {
+            throw new RuntimeException("创建房间失败：房间ID未生成");
+        }
+        
         // 添加房主为玩家
         RoomPlayer owner = new RoomPlayer();
         owner.setRoomId(room.getId());
@@ -209,6 +214,13 @@ public class RoomService {
         Map<String, Object> result = convertRoomToMap(room);
         // 添加当前用户ID（用于前端识别）
         result.put("currentUserId", userId);
+        
+        // 验证返回数据格式
+        if (!result.containsKey("roomId") || result.get("roomId") == null) {
+            throw new RuntimeException("创建房间失败：返回数据格式错误，缺少roomId");
+        }
+        
+        System.out.println("✅ [createRoom] 创建房间成功: roomId=" + result.get("roomId") + ", roomCode=" + result.get("roomCode") + ", userId=" + userId);
         
         return result;
     }
@@ -337,22 +349,22 @@ public class RoomService {
         }
         
         // 检查是否有重复数字
-        Set<Character> digits = new HashSet<>();
-        for (char c : secretNumber.toCharArray()) {
-            if (!digits.add(c)) {
-                throw new RuntimeException("数字不能重复");
-            }
-        }
+//        Set<Character> digits = new HashSet<>();
+//        for (char c : secretNumber.toCharArray()) {
+//            if (!digits.add(c)) {
+//                throw new RuntimeException("数字不能重复");
+//            }
+//        }
         
         // 检查是否与其他玩家相同
-        LambdaQueryWrapper<RoomPlayer> otherWrapper = new LambdaQueryWrapper<>();
-        otherWrapper.eq(RoomPlayer::getRoomId, roomId)
-                    .ne(RoomPlayer::getUserId, userId)
-                    .eq(RoomPlayer::getSecretNumber, secretNumber);
-        RoomPlayer otherPlayer = roomPlayerMapper.selectOne(otherWrapper);
-        if (otherPlayer != null) {
-            throw new RuntimeException("不能与对方数字相同");
-        }
+//        LambdaQueryWrapper<RoomPlayer> otherWrapper = new LambdaQueryWrapper<>();
+//        otherWrapper.eq(RoomPlayer::getRoomId, roomId)
+//                    .ne(RoomPlayer::getUserId, userId)
+//                    .eq(RoomPlayer::getSecretNumber, secretNumber);
+//        RoomPlayer otherPlayer = roomPlayerMapper.selectOne(otherWrapper);
+//        if (otherPlayer != null) {
+//            throw new RuntimeException("不能与对方数字相同");
+//        }
         
         player.setSecretNumber(secretNumber);
         roomPlayerMapper.updateById(player);

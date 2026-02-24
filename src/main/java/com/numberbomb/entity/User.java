@@ -16,6 +16,10 @@ public class User {
     
     private String unionid;
     
+    private String username;
+    
+    private String password;
+    
     private String nickname;
     
     private String avatarUrl;

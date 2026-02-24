@@ -8,6 +8,8 @@ import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.Map;
+
 @RestController
 @RequestMapping("/api/room")
 @RequiredArgsConstructor
@@ -39,8 +41,30 @@ public class RoomController {
         }
         
         try {
-            return Result.success(roomService.createRoom(userId, dto));
+            Map<String, Object> roomData = roomService.createRoom(userId, dto);
+            
+            // 验证返回数据是否有效
+            if (roomData == null) {
+                System.err.println("❌ [RoomController] createRoom 返回 null, userId=" + userId);
+                return Result.error(500, "创建房间失败：服务器返回数据为空");
+            }
+            
+            // 验证必要字段是否存在
+            if (!roomData.containsKey("roomId") || roomData.get("roomId") == null) {
+                System.err.println("❌ [RoomController] createRoom 返回数据缺少 roomId, data=" + roomData);
+                return Result.error(500, "创建房间失败：返回数据格式错误，缺少房间ID");
+            }
+            
+            if (!roomData.containsKey("roomCode") || roomData.get("roomCode") == null) {
+                System.err.println("❌ [RoomController] createRoom 返回数据缺少 roomCode, data=" + roomData);
+                return Result.error(500, "创建房间失败：返回数据格式错误，缺少房间号");
+            }
+            
+            System.out.println("✅ [RoomController] 创建房间成功: roomId=" + roomData.get("roomId") + ", roomCode=" + roomData.get("roomCode"));
+            return Result.success(roomData);
         } catch (Exception e) {
+            System.err.println("❌ [RoomController] 创建房间异常: " + e.getMessage());
+            e.printStackTrace();
             return Result.error(500, "创建房间失败: " + e.getMessage());
         }
     }

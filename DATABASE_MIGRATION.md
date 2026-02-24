@@ -1,5 +1,26 @@
 # 数据库迁移说明
 
+## 用户表添加账号密码登录支持
+
+### users 表变更
+
+```sql
+-- 添加 username 字段
+ALTER TABLE users 
+ADD COLUMN username VARCHAR(20) UNIQUE COMMENT '登录用户名';
+
+-- 添加 password 字段
+ALTER TABLE users 
+ADD COLUMN password VARCHAR(64) COMMENT '密码（MD5加密）';
+
+-- 修改 openid 字段允许为空（账号密码登录不需要 openid）
+ALTER TABLE users 
+MODIFY COLUMN openid VARCHAR(64) NULL COMMENT '微信openid';
+
+-- 为 username 添加索引
+CREATE INDEX idx_users_username ON users(username);
+```
+
 ## 从数字炸弹模式迁移到猜数字模式
 
 ### 1. GameRecord 表 (game_records)
