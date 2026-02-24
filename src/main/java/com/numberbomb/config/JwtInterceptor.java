@@ -8,6 +8,9 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.HandlerInterceptor;
 
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
+
 @Component
 @RequiredArgsConstructor
 public class JwtInterceptor implements HandlerInterceptor {
@@ -83,6 +86,13 @@ public class JwtInterceptor implements HandlerInterceptor {
                     tempNickname = request.getHeader("X-Temp-Nickname");
                 }
                 if (tempNickname != null && !tempNickname.isEmpty()) {
+                    // 前端使用 encodeURIComponent 编码，这里需要解码
+                    try {
+                        tempNickname = URLDecoder.decode(tempNickname, StandardCharsets.UTF_8);
+                    } catch (Exception e) {
+                        // 如果解码失败，使用原始值（可能是未编码的）
+                        System.out.println("⚠️ [JwtInterceptor] 昵称解码失败，使用原始值: " + e.getMessage());
+                    }
                     request.setAttribute("tempNickname", tempNickname);
                     System.out.println("✅ [房间/游戏接口] 收到临时昵称: " + tempNickname);
                 }

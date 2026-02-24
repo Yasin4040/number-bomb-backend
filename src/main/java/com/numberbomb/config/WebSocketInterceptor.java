@@ -17,6 +17,8 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.socket.WebSocketHandler;
 import org.springframework.web.socket.server.HandshakeInterceptor;
 
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 import java.security.Principal;
 import java.util.Map;
 
@@ -130,10 +132,26 @@ public class WebSocketInterceptor implements HandshakeInterceptor, ChannelInterc
             tempNickname = request.getHeader("X-Temp-Nickname");
         }
         if (tempNickname != null && !tempNickname.isEmpty()) {
+            // 前端使用 encodeURIComponent 编码，这里需要解码
+            try {
+                tempNickname = URLDecoder.decode(tempNickname, StandardCharsets.UTF_8);
+            } catch (Exception e) {
+                // 如果解码失败，使用原始值（可能是未编码的）
+                log.warn("WebSocket连接 - 昵称解码失败，使用原始值: {}", e.getMessage());
+            }
             return tempNickname;
         }
-        // 从查询参数中获取
-        return request.getParameter("tempNickname");
+        // 从查询参数中获取（查询参数也需要解码）
+        String paramNickname = request.getParameter("tempNickname");
+        if (paramNickname != null && !paramNickname.isEmpty()) {
+            try {
+                paramNickname = URLDecoder.decode(paramNickname, StandardCharsets.UTF_8);
+            } catch (Exception e) {
+                log.warn("WebSocket连接 - 查询参数昵称解码失败，使用原始值: {}", e.getMessage());
+            }
+            return paramNickname;
+        }
+        return null;
     }
 
     /**
