@@ -1,0 +1,190 @@
+package com.numberbomb.controller;
+
+import com.numberbomb.dto.CreateRoomDTO;
+import com.numberbomb.service.RoomService;
+import com.numberbomb.utils.TempUserUtil;
+import com.numberbomb.vo.Result;
+import jakarta.servlet.http.HttpServletRequest;
+import lombok.RequiredArgsConstructor;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/api/room")
+@RequiredArgsConstructor
+public class RoomController {
+    
+    private final RoomService roomService;
+    
+    @PostMapping("/create")
+    public Result<?> createRoom(@RequestBody CreateRoomDTO dto, HttpServletRequest request) {
+        Long userId = (Long) request.getAttribute("userId");
+        String tempUserId = (String) request.getAttribute("tempUserId");
+        
+        // 如果是临时用户，创建或获取临时用户
+        if (userId == null) {
+            if (tempUserId != null && !tempUserId.isEmpty()) {
+                try {
+                    userId = roomService.getOrCreateTempUser(tempUserId, request);
+                } catch (Exception e) {
+                    return Result.error(500, "创建临时用户失败: " + e.getMessage());
+                }
+            } else {
+                // 如果没有临时用户ID，返回错误
+                return Result.error(401, "未登录且未提供临时用户ID");
+            }
+        }
+        
+        if (userId == null) {
+            return Result.error(401, "无法获取用户ID");
+        }
+        
+        try {
+            return Result.success(roomService.createRoom(userId, dto));
+        } catch (Exception e) {
+            return Result.error(500, "创建房间失败: " + e.getMessage());
+        }
+    }
+    
+    @PostMapping("/join")
+    public Result<?> joinRoom(@RequestBody JoinRoomDTO dto, HttpServletRequest request) {
+        Long userId = (Long) request.getAttribute("userId");
+        String tempUserId = (String) request.getAttribute("tempUserId");
+        
+        // 如果是临时用户，创建或获取临时用户
+        if (userId == null && tempUserId != null) {
+            userId = roomService.getOrCreateTempUser(tempUserId, request);
+        }
+        
+        return Result.success(roomService.joinRoom(userId, dto.getRoomCode()));
+    }
+    
+    @PostMapping("/ready")
+    public Result<?> setReady(@RequestBody ReadyDTO dto, HttpServletRequest request) {
+        Long userId = (Long) request.getAttribute("userId");
+        String tempUserId = (String) request.getAttribute("tempUserId");
+        
+        // 如果是临时用户，创建或获取临时用户
+        if (userId == null && tempUserId != null) {
+            userId = roomService.getOrCreateTempUser(tempUserId, request);
+        }
+        
+        if (userId == null) {
+            return Result.error(401, "无法获取用户ID");
+        }
+        
+        roomService.setReady(dto.getRoomId(), userId, dto.getIsReady());
+        return Result.success();
+    }
+    
+    @GetMapping("/info")
+    public Result<?> getRoomInfo(@RequestParam Long roomId, HttpServletRequest request) {
+        Long userId = (Long) request.getAttribute("userId");
+        String tempUserId = (String) request.getAttribute("tempUserId");
+        
+        // 如果是临时用户，创建或获取临时用户
+        if (userId == null && tempUserId != null && !tempUserId.isEmpty()) {
+            try {
+                userId = roomService.getOrCreateTempUser(tempUserId, request);
+            } catch (Exception e) {
+                // 如果创建临时用户失败，仍然允许获取房间信息（userId可以为null）
+                System.err.println("创建临时用户失败: " + e.getMessage());
+            }
+        }
+        
+        // getRoomInfo 允许 userId 为 null（未登录用户也可以查看房间信息）
+        return Result.success(roomService.getRoomInfo(roomId, userId));
+    }
+    
+    @PostMapping("/start")
+    public Result<?> startGame(@RequestBody StartGameDTO dto, HttpServletRequest request) {
+        Long userId = (Long) request.getAttribute("userId");
+        roomService.startGame(dto.getRoomId(), userId);
+        return Result.success();
+    }
+    
+    @PostMapping("/set-secret")
+    public Result<?> setPlayerSecret(@RequestBody SetSecretDTO dto, HttpServletRequest request) {
+        Long userId = (Long) request.getAttribute("userId");
+        String tempUserId = (String) request.getAttribute("tempUserId");
+        
+        if (userId == null && tempUserId != null) {
+            userId = roomService.getOrCreateTempUser(tempUserId, request);
+        }
+        
+        if (userId == null) {
+            return Result.error(401, "无法获取用户ID");
+        }
+        
+        roomService.setPlayerSecret(dto.getRoomId(), userId, dto.getSecretNumber());
+        return Result.success();
+    }
+    
+    @PostMapping("/set-turn-order")
+    public Result<?> setTurnOrder(@RequestBody SetTurnOrderDTO dto, HttpServletRequest request) {
+        Long userId = (Long) request.getAttribute("userId");
+        String tempUserId = (String) request.getAttribute("tempUserId");
+        
+        if (userId == null && tempUserId != null) {
+            userId = roomService.getOrCreateTempUser(tempUserId, request);
+        }
+        
+        if (userId == null) {
+            return Result.error(401, "无法获取用户ID");
+        }
+        
+        roomService.setTurnOrder(dto.getRoomId(), userId, dto.getTurnOrder());
+        return Result.success();
+    }
+    
+    @PostMapping("/emoji")
+    public Result<?> sendEmoji(@RequestBody EmojiDTO dto, HttpServletRequest request) {
+        Long userId = (Long) request.getAttribute("userId");
+        String tempUserId = (String) request.getAttribute("tempUserId");
+        
+        if (userId == null && tempUserId != null) {
+            userId = roomService.getOrCreateTempUser(tempUserId, request);
+        }
+        
+        if (userId == null) {
+            return Result.error(401, "无法获取用户ID");
+        }
+        
+        // 这里可以通过WebSocket发送表情给其他玩家
+        // 暂时只返回成功
+        return Result.success();
+    }
+    
+    @lombok.Data
+    public static class JoinRoomDTO {
+        private String roomCode;
+    }
+    
+    @lombok.Data
+    public static class ReadyDTO {
+        private Long roomId;
+        private Boolean isReady;
+    }
+    
+    @lombok.Data
+    public static class StartGameDTO {
+        private Long roomId;
+    }
+    
+    @lombok.Data
+    public static class SetSecretDTO {
+        private Long roomId;
+        private String secretNumber;
+    }
+    
+    @lombok.Data
+    public static class SetTurnOrderDTO {
+        private Long roomId;
+        private Integer turnOrder; // 1=先手, 2=后手
+    }
+    
+    @lombok.Data
+    public static class EmojiDTO {
+        private Long roomId;
+        private String emoji;
+    }
+}
