@@ -20,9 +20,9 @@ spring:
       connection-timeout: 20000
   
   redis:
-    host: ${REDIS_HOST:localhost}
+    host: ${REDIS_HOST:120.27.196.197}
     port: ${REDIS_PORT:6379}
-    password: ${REDIS_PASSWORD:}
+    password: ${REDIS_PASSWORD:li3301359}
     database: 0
     timeout: 5000
     lettuce:
