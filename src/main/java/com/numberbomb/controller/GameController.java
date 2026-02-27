@@ -65,6 +65,15 @@ public class GameController {
         }
         return Result.success(gameService.getGameStatus(gameId, userId));
     }
+
+    @PostMapping("/reconnect")
+    public Result<?> reconnectGame(@RequestBody ReconnectDTO dto, HttpServletRequest request) {
+        Long userId = getUserId(request);
+        if (userId == null) {
+            return Result.error(401, "未授权，请检查临时用户ID");
+        }
+        return Result.success(gameService.reconnectGame(dto.getGameId(), userId));
+    }
     
     @PostMapping("/end")
     public Result<?> endGame(@RequestBody EndGameDTO dto, HttpServletRequest request) {
@@ -73,6 +82,15 @@ public class GameController {
             return Result.error(401, "未授权，请检查临时用户ID");
         }
         return Result.success(gameService.endGame(dto.getGameId(), dto.getLoserId(), userId));
+    }
+
+    @PostMapping("/giveup")
+    public Result<?> giveUpGame(@RequestBody GiveUpDTO dto, HttpServletRequest request) {
+        Long userId = getUserId(request);
+        if (userId == null) {
+            return Result.error(401, "未授权，请检查临时用户ID");
+        }
+        return Result.success(gameService.giveUpGame(dto.getGameId(), userId));
     }
     
     @Data
@@ -90,5 +108,15 @@ public class GameController {
     public static class EndGameDTO {
         private Long gameId;
         private Long loserId;
+    }
+
+    @Data
+    public static class ReconnectDTO {
+        private Long gameId;
+    }
+
+    @Data
+    public static class GiveUpDTO {
+        private Long gameId;
     }
 }

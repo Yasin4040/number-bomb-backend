@@ -15,6 +15,7 @@ public class MatchService {
     
     private final RedisTemplate<String, Object> redisTemplate;
     private final UserMapper userMapper;
+    private final WebSocketService webSocketService;
     
     public Map<String, Object> startMatch(Long userId, String mode, Integer rankLevel) {
         String matchId = "match_" + userId + "_" + System.currentTimeMillis();
@@ -132,6 +133,34 @@ public class MatchService {
             
             redisTemplate.opsForValue().set("match:" + matchId1, matchInfo1, 300, TimeUnit.SECONDS);
             redisTemplate.opsForValue().set("match:" + matchId2, matchInfo2, 300, TimeUnit.SECONDS);
+            
+            // 通过WebSocket通知两个玩家匹配成功
+            User opponent1 = userMapper.selectById(player2);
+            User opponent2 = userMapper.selectById(player1);
+            
+            if (opponent1 != null) {
+                Map<String, Object> opponentInfo1 = new HashMap<>();
+                opponentInfo1.put("id", opponent1.getId());
+                opponentInfo1.put("nickname", opponent1.getNickname());
+                opponentInfo1.put("avatarUrl", opponent1.getAvatarUrl());
+                opponentInfo1.put("rankLevel", opponent1.getRankLevel());
+                opponentInfo1.put("winRate", opponent1.getTotalGames() > 0 
+                    ? String.format("%.0f%%", (opponent1.getWinGames() * 100.0 / opponent1.getTotalGames()))
+                    : "0%");
+                webSocketService.notifyMatchSuccess(player1, player2, opponentInfo1);
+            }
+            
+            if (opponent2 != null) {
+                Map<String, Object> opponentInfo2 = new HashMap<>();
+                opponentInfo2.put("id", opponent2.getId());
+                opponentInfo2.put("nickname", opponent2.getNickname());
+                opponentInfo2.put("avatarUrl", opponent2.getAvatarUrl());
+                opponentInfo2.put("rankLevel", opponent2.getRankLevel());
+                opponentInfo2.put("winRate", opponent2.getTotalGames() > 0 
+                    ? String.format("%.0f%%", (opponent2.getWinGames() * 100.0 / opponent2.getTotalGames()))
+                    : "0%");
+                webSocketService.notifyMatchSuccess(player2, player1, opponentInfo2);
+            }
         }
     }
     

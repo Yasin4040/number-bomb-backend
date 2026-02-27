@@ -2,9 +2,11 @@ package com.numberbomb.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.numberbomb.dto.CreateRoomDTO;
+import com.numberbomb.entity.GameRecord;
 import com.numberbomb.entity.Room;
 import com.numberbomb.entity.RoomPlayer;
 import com.numberbomb.entity.User;
+import com.numberbomb.mapper.GameRecordMapper;
 import com.numberbomb.mapper.RoomMapper;
 import com.numberbomb.mapper.RoomPlayerMapper;
 import com.numberbomb.mapper.UserMapper;
@@ -18,16 +20,19 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDateTime;
 import java.util.*;
 import java.util.Random;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
 public class RoomService {
-    
+
     private final RoomMapper roomMapper;
     private final RoomPlayerMapper roomPlayerMapper;
     private final UserMapper userMapper;
+    private final GameRecordMapper gameRecordMapper;
     private final WebSocketService webSocketService;
+    private final org.springframework.data.redis.core.RedisTemplate<String, Object> redisTemplate;
     
     @Value("${game.room.expire-minutes:15}")
     private Integer expireMinutes;
@@ -613,5 +618,247 @@ public class RoomService {
             ip = ip.split(",")[0].trim();
         }
         return ip != null ? ip : "0.0.0.0";
+    }
+
+    // ==================== 断线重连功能 ====================
+
+    /**
+     * 获取用户当前进行中的房间
+     * @param userId 用户ID
+     * @return 房间信息，包含房间基本信息、游戏ID和对手信息
+     */
+    public Map<String, Object> getActiveRoomByUserId(Long userId) {
+        if (userId == null) {
+            return null;
+        }
+        
+        // 查找用户参与的所有房间玩家记录
+        LambdaQueryWrapper<RoomPlayer> playerWrapper = new LambdaQueryWrapper<>();
+        playerWrapper.eq(RoomPlayer::getUserId, userId);
+        List<RoomPlayer> roomPlayers = roomPlayerMapper.selectList(playerWrapper);
+        
+        if (roomPlayers.isEmpty()) {
+            return null;
+        }
+        
+        // 查找状态为"游戏中"(status=1)的房间
+        for (RoomPlayer roomPlayer : roomPlayers) {
+            Room room = roomMapper.selectById(roomPlayer.getRoomId());
+            if (room != null && room.getStatus() != null && room.getStatus() == 1) {
+                // 找到进行中的房间，构建返回信息
+                Map<String, Object> result = new HashMap<>();
+                
+                // 房间基本信息
+                result.put("roomId", room.getId());
+                result.put("roomCode", room.getRoomCode());
+                result.put("name", room.getName());
+                result.put("status", room.getStatus());
+                result.put("punishmentType", room.getPunishmentType());
+                result.put("punishmentContent", room.getPunishmentContent());
+                
+                // 获取游戏ID
+                LambdaQueryWrapper<GameRecord> gameWrapper = new LambdaQueryWrapper<>();
+                gameWrapper.eq(GameRecord::getRoomId, room.getId())
+                           .eq(GameRecord::getGameType, 2)
+                           .isNull(GameRecord::getEndedAt)
+                           .orderByDesc(GameRecord::getStartedAt)
+                           .last("LIMIT 1");
+                GameRecord gameRecord = gameRecordMapper.selectOne(gameWrapper);
+                if (gameRecord != null) {
+                    result.put("gameId", gameRecord.getId());
+                }
+                
+                // 获取对手信息
+                LambdaQueryWrapper<RoomPlayer> opponentWrapper = new LambdaQueryWrapper<>();
+                opponentWrapper.eq(RoomPlayer::getRoomId, room.getId())
+                               .ne(RoomPlayer::getUserId, userId);
+                RoomPlayer opponentPlayer = roomPlayerMapper.selectOne(opponentWrapper);
+                if (opponentPlayer != null) {
+                    User opponent = userMapper.selectById(opponentPlayer.getUserId());
+                    if (opponent != null) {
+                        Map<String, Object> opponentInfo = new HashMap<>();
+                        opponentInfo.put("id", opponent.getId());
+                        opponentInfo.put("nickname", opponent.getNickname());
+                        opponentInfo.put("avatarUrl", opponent.getAvatarUrl() != null ? opponent.getAvatarUrl() : "");
+                        result.put("opponent", opponentInfo);
+                    }
+                }
+                
+                // 获取当前用户信息
+                User currentUser = userMapper.selectById(userId);
+                if (currentUser != null) {
+                    Map<String, Object> currentUserInfo = new HashMap<>();
+                    currentUserInfo.put("id", currentUser.getId());
+                    currentUserInfo.put("nickname", currentUser.getNickname());
+                    currentUserInfo.put("avatarUrl", currentUser.getAvatarUrl() != null ? currentUser.getAvatarUrl() : "");
+                    result.put("currentUser", currentUserInfo);
+                }
+                
+                System.out.println("✅ [getActiveRoomByUserId] 找到进行中房间: userId=" + userId + ", roomId=" + room.getId());
+                return result;
+            }
+        }
+        
+        return null;
+    }
+
+    // ==================== 再来一局功能 ====================
+
+    /**
+     * 存储再来一局请求状态（使用Redis）
+     * key: restart_request:{roomId}
+     * value: {requesterId: Long, requestTime: Long}
+     */
+    private static final String RESTART_REQUEST_KEY_PREFIX = "restart_request:";
+
+    /**
+     * 请求再来一局
+     */
+    @Transactional
+    public Map<String, Object> requestRestart(Long roomId, Long userId) {
+        System.out.println("🔄 [requestRestart] 请求再来一局: roomId=" + roomId + ", userId=" + userId);
+
+        // 检查房间是否存在
+        Room room = roomMapper.selectById(roomId);
+        if (room == null) {
+            throw new RuntimeException("房间不存在");
+        }
+
+        // 检查用户是否在房间中
+        LambdaQueryWrapper<RoomPlayer> playerWrapper = new LambdaQueryWrapper<>();
+        playerWrapper.eq(RoomPlayer::getRoomId, roomId)
+                .eq(RoomPlayer::getUserId, userId);
+        RoomPlayer player = roomPlayerMapper.selectOne(playerWrapper);
+        if (player == null) {
+            throw new RuntimeException("您不在该房间中");
+        }
+
+        // 获取请求者昵称
+        User user = userMapper.selectById(userId);
+        String requesterName = user != null ? user.getNickname() : "玩家" + userId;
+
+        // 存储请求状态到Redis
+        String redisKey = RESTART_REQUEST_KEY_PREFIX + roomId;
+        Map<String, Object> requestData = new HashMap<>();
+        requestData.put("requesterId", userId);
+        requestData.put("requestTime", System.currentTimeMillis());
+        redisTemplate.opsForValue().set(redisKey, requestData, 5, TimeUnit.MINUTES); // 5分钟过期
+
+        // 通过WebSocket通知房间内其他玩家
+        webSocketService.notifyRestartRequested(roomId, userId, requesterName);
+
+        System.out.println("✅ [requestRestart] 再来一局请求已发送: roomId=" + roomId + ", requesterId=" + userId);
+
+        Map<String, Object> result = new HashMap<>();
+        result.put("success", true);
+        result.put("message", "再来一局请求已发送，等待对方响应");
+        result.put("requesterId", userId);
+        result.put("requesterName", requesterName);
+        return result;
+    }
+
+    /**
+     * 响应再来一局请求
+     */
+    @Transactional
+    public Map<String, Object> respondRestart(Long roomId, Long userId, Boolean accepted) {
+        System.out.println("🔄 [respondRestart] 响应再来一局: roomId=" + roomId + ", userId=" + userId + ", accepted=" + accepted);
+
+        // 检查房间是否存在
+        Room room = roomMapper.selectById(roomId);
+        if (room == null) {
+            throw new RuntimeException("房间不存在");
+        }
+
+        // 检查用户是否在房间中
+        LambdaQueryWrapper<RoomPlayer> playerWrapper = new LambdaQueryWrapper<>();
+        playerWrapper.eq(RoomPlayer::getRoomId, roomId)
+                .eq(RoomPlayer::getUserId, userId);
+        RoomPlayer player = roomPlayerMapper.selectOne(playerWrapper);
+        if (player == null) {
+            throw new RuntimeException("您不在该房间中");
+        }
+
+        // 获取请求状态
+        String redisKey = RESTART_REQUEST_KEY_PREFIX + roomId;
+        Map<String, Object> requestData = (Map<String, Object>) redisTemplate.opsForValue().get(redisKey);
+
+        if (requestData == null) {
+            throw new RuntimeException("再来一局请求已过期或不存在");
+        }
+
+        Long requesterId = ((Number) requestData.get("requesterId")).longValue();
+
+        // 不能响应自己的请求
+        if (requesterId.equals(userId)) {
+            throw new RuntimeException("不能响应自己的请求");
+        }
+
+        if (accepted) {
+            // 同意再来一局，重置房间和玩家状态
+            System.out.println("✅ [respondRestart] 同意再来一局，开始重置状态: roomId=" + roomId);
+
+            // 1. 重置房间状态为等待中
+            room.setStatus(0); // 等待中
+            room.setWinnerId(null);
+            room.setExpiredAt(LocalDateTime.now().plusMinutes(expireMinutes));
+            roomMapper.updateById(room);
+
+            // 2. 重置所有玩家的状态
+            LambdaQueryWrapper<RoomPlayer> allPlayersWrapper = new LambdaQueryWrapper<>();
+            allPlayersWrapper.eq(RoomPlayer::getRoomId, roomId);
+            List<RoomPlayer> allPlayers = roomPlayerMapper.selectList(allPlayersWrapper);
+
+            for (RoomPlayer p : allPlayers) {
+                p.setIsReady(0);
+                p.setSecretNumber(null);
+                p.setTurnOrder(null);
+                roomPlayerMapper.updateById(p);
+            }
+
+            // 3. 清除Redis中的游戏状态
+            // 先找到该房间的游戏记录
+            LambdaQueryWrapper<com.numberbomb.entity.GameRecord> gameWrapper = new LambdaQueryWrapper<>();
+            gameWrapper.eq(com.numberbomb.entity.GameRecord::getRoomId, roomId)
+                       .orderByDesc(com.numberbomb.entity.GameRecord::getStartedAt)
+                       .last("LIMIT 1");
+            com.numberbomb.entity.GameRecord lastGame = gameRecordMapper.selectOne(gameWrapper);
+            if (lastGame != null) {
+                String gameKey = "game:" + lastGame.getId();
+                redisTemplate.delete(gameKey);
+                System.out.println("✅ [respondRestart] 清除游戏状态: gameKey=" + gameKey);
+            }
+
+            // 4. 清除再来一局请求状态
+            redisTemplate.delete(redisKey);
+
+            // 5. 通知所有玩家再来一局准备就绪
+            Map<String, Object> roomInfo = getRoomInfo(roomId, null);
+            webSocketService.notifyRestartAccepted(roomId, userId);
+            webSocketService.notifyRestartReady(roomId, roomInfo);
+
+            System.out.println("✅ [respondRestart] 再来一局准备就绪: roomId=" + roomId);
+
+            Map<String, Object> result = new HashMap<>();
+            result.put("success", true);
+            result.put("message", "再来一局准备就绪");
+            result.put("room", roomInfo.get("room"));
+            result.put("players", roomInfo.get("players"));
+            return result;
+        } else {
+            // 拒绝再来一局
+            System.out.println("❌ [respondRestart] 拒绝再来一局: roomId=" + roomId);
+
+            // 清除请求状态
+            redisTemplate.delete(redisKey);
+
+            // 通知所有玩家被拒绝
+            webSocketService.notifyRestartRejected(roomId, userId, "对方拒绝了再来一局");
+
+            Map<String, Object> result = new HashMap<>();
+            result.put("success", false);
+            result.put("message", "已拒绝再来一局");
+            return result;
+        }
     }
 }

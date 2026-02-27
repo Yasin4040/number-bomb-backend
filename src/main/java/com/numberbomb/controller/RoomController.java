@@ -203,6 +203,73 @@ public class RoomController {
         roomService.updateUserNickname(userId, dto.getNickname().trim());
         return Result.success();
     }
+
+    /**
+     * 请求再来一局
+     */
+    @PostMapping("/restart/request")
+    public Result<?> requestRestart(@RequestBody RestartDTO dto, HttpServletRequest request) {
+        Long userId = (Long) request.getAttribute("userId");
+        String tempUserId = (String) request.getAttribute("tempUserId");
+        
+        if (userId == null && tempUserId != null) {
+            userId = roomService.getOrCreateTempUser(tempUserId, request);
+        }
+        
+        if (userId == null) {
+            return Result.error(401, "无法获取用户ID");
+        }
+        
+        return Result.success(roomService.requestRestart(dto.getRoomId(), userId));
+    }
+
+    /**
+     * 响应再来一局请求（同意或拒绝）
+     */
+    @PostMapping("/restart/respond")
+    public Result<?> respondRestart(@RequestBody RestartRespondDTO dto, HttpServletRequest request) {
+        Long userId = (Long) request.getAttribute("userId");
+        String tempUserId = (String) request.getAttribute("tempUserId");
+        
+        if (userId == null && tempUserId != null) {
+            userId = roomService.getOrCreateTempUser(tempUserId, request);
+        }
+        
+        if (userId == null) {
+            return Result.error(401, "无法获取用户ID");
+        }
+        
+        return Result.success(roomService.respondRestart(dto.getRoomId(), userId, dto.getAccepted()));
+    }
+
+    /**
+     * 获取用户当前进行中的房间（断线重连用）
+     */
+    @GetMapping("/active")
+    public Result<?> getActiveRoom(HttpServletRequest request) {
+        Long userId = (Long) request.getAttribute("userId");
+        String tempUserId = (String) request.getAttribute("tempUserId");
+        
+        // 如果是临时用户，先获取或创建用户
+        if (userId == null && tempUserId != null && !tempUserId.isEmpty()) {
+            try {
+                userId = roomService.getOrCreateTempUser(tempUserId, request);
+            } catch (Exception e) {
+                System.err.println("创建临时用户失败: " + e.getMessage());
+            }
+        }
+        
+        if (userId == null) {
+            return Result.error(401, "无法获取用户ID");
+        }
+        
+        Map<String, Object> activeRoom = roomService.getActiveRoomByUserId(userId);
+        if (activeRoom == null) {
+            return Result.success(null); // 没有进行中的房间，返回null
+        }
+        
+        return Result.success(activeRoom);
+    }
     
     @lombok.Data
     public static class JoinRoomDTO {
@@ -241,5 +308,16 @@ public class RoomController {
     @lombok.Data
     public static class UpdateNicknameDTO {
         private String nickname;
+    }
+
+    @lombok.Data
+    public static class RestartDTO {
+        private Long roomId;
+    }
+
+    @lombok.Data
+    public static class RestartRespondDTO {
+        private Long roomId;
+        private Boolean accepted; // true=同意, false=拒绝
     }
 }
