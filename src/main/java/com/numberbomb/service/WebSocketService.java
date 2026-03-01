@@ -2,17 +2,24 @@ package com.numberbomb.service;
 
 import com.numberbomb.websocket.GameWebSocketHandler;
 import com.numberbomb.websocket.WebSocketMessage;
+import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.context.annotation.Lazy;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 /**
  * WebSocket消息推送服务
  * 只使用原生WebSocket，移除STOMP支持
+ * 增强消息可靠性：添加消息缓存、确认和重试机制
  */
 @Slf4j
 @Service
@@ -20,8 +27,172 @@ public class WebSocketService {
     
     private final GameWebSocketHandler gameWebSocketHandler;
     
+    // 消息缓存：userId -> (messageId -> CachedMessage)
+    private final Map<String, Map<String, CachedMessage>> messageCache = new ConcurrentHashMap<>();
+    
+    // 待确认消息：messageId -> PendingAckMessage
+    private final Map<String, PendingAckMessage> pendingAckMessages = new ConcurrentHashMap<>();
+    
+    // 定时任务执行器
+    private ScheduledExecutorService scheduler;
+    
+    // 配置常量
+    private static final int MAX_RETRY_COUNT = 3;
+    private static final long RETRY_INTERVAL_MS = 2000;
+    private static final long MESSAGE_CACHE_EXPIRY_MS = 60000; // 60秒过期
+    private static final long ACK_TIMEOUT_MS = 5000; // 5秒确认超时
+    
     public WebSocketService(@Lazy GameWebSocketHandler gameWebSocketHandler) {
         this.gameWebSocketHandler = gameWebSocketHandler;
+    }
+    
+    @PostConstruct
+    public void init() {
+        scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "websocket-retry-scheduler");
+            t.setDaemon(true);
+            return t;
+        });
+        
+        // 启动定时清理任务
+        scheduler.scheduleAtFixedRate(this::cleanupExpiredMessages, 30, 30, TimeUnit.SECONDS);
+        // 启动重试检查任务
+        scheduler.scheduleAtFixedRate(this::retryPendingMessages, 1, 1, TimeUnit.SECONDS);
+    }
+    
+    /**
+     * 缓存消息（用于离线玩家重连后推送）
+     */
+    private void cacheMessage(String userId, WebSocketMessage message) {
+        if (userId == null || message == null || message.getMessageId() == null) {
+            return;
+        }
+        
+        Map<String, CachedMessage> userCache = messageCache.computeIfAbsent(userId, k -> new ConcurrentHashMap<>());
+        userCache.put(message.getMessageId(), new CachedMessage(message, System.currentTimeMillis()));
+        
+        // 限制缓存大小，防止内存溢出
+        if (userCache.size() > 100) {
+            // 移除最旧的消息
+            String oldestKey = userCache.entrySet().stream()
+                .min(Map.Entry.comparingByValue((a, b) -> Long.compare(a.timestamp, b.timestamp)))
+                .map(Map.Entry::getKey)
+                .orElse(null);
+            if (oldestKey != null) {
+                userCache.remove(oldestKey);
+            }
+        }
+    }
+    
+    /**
+     * 获取并清除用户的缓存消息（重连后调用）
+     */
+    public Map<String, WebSocketMessage> getCachedMessages(String userId) {
+        Map<String, CachedMessage> userCache = messageCache.get(userId);
+        if (userCache == null || userCache.isEmpty()) {
+            return new HashMap<>();
+        }
+        
+        Map<String, WebSocketMessage> result = new HashMap<>();
+        long now = System.currentTimeMillis();
+        
+        userCache.forEach((msgId, cached) -> {
+            if (now - cached.timestamp < MESSAGE_CACHE_EXPIRY_MS) {
+                result.put(msgId, cached.message);
+            }
+        });
+        
+        // 清除已获取的消息
+        userCache.keySet().removeAll(result.keySet());
+        
+        return result;
+    }
+    
+    /**
+     * 记录待确认消息
+     */
+    private void recordPendingAck(String userId, WebSocketMessage message) {
+        if (message == null || message.getMessageId() == null) {
+            return;
+        }
+        
+        pendingAckMessages.put(message.getMessageId(), 
+            new PendingAckMessage(userId, message, System.currentTimeMillis(), 0));
+    }
+    
+    /**
+     * 处理消息确认
+     */
+    public void handleMessageAck(String userId, String messageId) {
+        log.debug("收到消息确认: userId={}, messageId={}", userId, messageId);
+        pendingAckMessages.remove(messageId);
+    }
+    
+    /**
+     * 重试待确认消息
+     */
+    private void retryPendingMessages() {
+        long now = System.currentTimeMillis();
+        
+        pendingAckMessages.forEach((msgId, pending) -> {
+            if (now - pending.sendTime > ACK_TIMEOUT_MS && pending.retryCount < MAX_RETRY_COUNT) {
+                log.warn("消息未确认，执行重试: messageId={}, retryCount={}", msgId, pending.retryCount + 1);
+                pending.retryCount++;
+                pending.sendTime = now;
+                
+                // 重新发送
+                sendToUser(Long.parseLong(pending.userId), pending.message);
+            } else if (pending.retryCount >= MAX_RETRY_COUNT) {
+                log.error("消息重试次数耗尽，放弃重试: messageId={}", msgId);
+                pendingAckMessages.remove(msgId);
+            }
+        });
+    }
+    
+    /**
+     * 清理过期消息
+     */
+    private void cleanupExpiredMessages() {
+        long now = System.currentTimeMillis();
+        
+        // 清理消息缓存
+        messageCache.values().forEach(userCache -> 
+            userCache.entrySet().removeIf(entry -> 
+                now - entry.getValue().timestamp > MESSAGE_CACHE_EXPIRY_MS));
+        
+        // 清理待确认消息
+        pendingAckMessages.entrySet().removeIf(entry -> 
+            now - entry.getValue().sendTime > ACK_TIMEOUT_MS * (entry.getValue().retryCount + 1) + 10000);
+    }
+    
+    /**
+     * 缓存消息内部类
+     */
+    private static class CachedMessage {
+        final WebSocketMessage message;
+        final long timestamp;
+        
+        CachedMessage(WebSocketMessage message, long timestamp) {
+            this.message = message;
+            this.timestamp = timestamp;
+        }
+    }
+    
+    /**
+     * 待确认消息内部类
+     */
+    private static class PendingAckMessage {
+        final String userId;
+        final WebSocketMessage message;
+        long sendTime;
+        int retryCount;
+        
+        PendingAckMessage(String userId, WebSocketMessage message, long sendTime, int retryCount) {
+            this.userId = userId;
+            this.message = message;
+            this.sendTime = sendTime;
+            this.retryCount = retryCount;
+        }
     }
     
     /**
@@ -57,11 +228,32 @@ public class WebSocketService {
     }
     
     /**
-     * 向特定用户发送消息
+     * 向特定用户发送消息（带缓存和确认机制）
      */
     public void sendToUser(Long userId, WebSocketMessage message) {
         log.debug("发送消息给用户 {}: {}", userId, message.getType());
-        gameWebSocketHandler.sendMessageToUser(userId.toString(), message);
+        
+        String userIdStr = userId.toString();
+        
+        // 缓存消息（用于离线重连后推送）
+        cacheMessage(userIdStr, message);
+        
+        // 发送消息
+        gameWebSocketHandler.sendMessageToUser(userIdStr, message);
+        
+        // 对关键消息类型记录待确认状态
+        if (isAckRequiredMessage(message.getType())) {
+            recordPendingAck(userIdStr, message);
+        }
+    }
+    
+    /**
+     * 判断消息类型是否需要确认
+     */
+    private boolean isAckRequiredMessage(WebSocketMessage.MessageType type) {
+        return type == WebSocketMessage.MessageType.GAME_GUESS_RESULT ||
+               type == WebSocketMessage.MessageType.GAME_ENDED ||
+               type == WebSocketMessage.MessageType.GAME_TURN_CHANGED;
     }
     
     /**
@@ -214,7 +406,7 @@ public class WebSocketService {
     }
 
     /**
-     * 通知猜测结果（同时发送给两个玩家）
+     * 通知猜测结果（同时发送给两个玩家，带可靠性保证）
      */
     public void notifyGuessResult(Long gameId, Long playerId, Long opponentId, String guess,
                                    Integer a, Integer b, Boolean isGameOver,
@@ -236,39 +428,80 @@ public class WebSocketService {
         data.put("nextPlayer", nextPlayerId);
         data.put("countdown", countdown != null ? countdown : 180);
         data.put("timestamp", System.currentTimeMillis());
+        data.put("requiresAck", true); // 标记需要确认
         WebSocketMessage message = buildMessage(WebSocketMessage.MessageType.GAME_GUESS_RESULT, data, gameId, null, playerId != null ? playerId.toString() : null);
 
         log.info("【WebSocket广播】猜测结果: gameId={}, playerId={}, opponentId={}, guess={}, result={}A{}B, nextPlayer={}",
             gameId, playerId, opponentId, guess, a, b, nextPlayerId);
 
-        // 直接发送给两个玩家
-        sendToUser(playerId, message);
+        // 直接发送给两个玩家（带重试机制）
+        sendToUserWithRetry(playerId, message, 3);
         if (opponentId != null) {
-            sendToUser(opponentId, message);
+            sendToUserWithRetry(opponentId, message, 3);
         }
 
-        // 同时广播到游戏
+        // 同时广播到游戏（作为备份通道）
         gameWebSocketHandler.broadcastToGame(gameId, message);
+    }
+    
+    /**
+     * 带重试机制的发送
+     */
+    private void sendToUserWithRetry(Long userId, WebSocketMessage message, int maxRetries) {
+        int attempts = 0;
+        boolean sent = false;
+        
+        while (attempts < maxRetries && !sent) {
+            try {
+                sendToUser(userId, message);
+                sent = true;
+            } catch (Exception e) {
+                attempts++;
+                log.warn("发送消息失败，准备重试: userId={}, messageId={}, attempt={}/{}", 
+                    userId, message.getMessageId(), attempts, maxRetries);
+                if (attempts < maxRetries) {
+                    try {
+                        Thread.sleep(RETRY_INTERVAL_MS);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
+                }
+            }
+        }
+        
+        if (!sent) {
+            log.error("消息发送失败，重试次数耗尽: userId={}, messageId={}", userId, message.getMessageId());
+        }
     }
 
     /**
-     * 通知游戏结束（同时发送给两个玩家）
+     * 通知游戏结束（同时发送给两个玩家，带可靠性保证）
      */
     public void notifyGameEnded(Long gameId, Long winnerId, Long loserId, Map<String, Object> gameResult) {
         Map<String, Object> data = new HashMap<>(gameResult);
         data.put("gameId", gameId);
         data.put("winnerId", winnerId);
         data.put("loserId", loserId);
+        data.put("timestamp", System.currentTimeMillis());
+        data.put("requiresAck", true); // 标记需要确认
         WebSocketMessage message = buildMessage(WebSocketMessage.MessageType.GAME_ENDED, data, gameId, null, null);
 
-        // 直接发送给两个玩家
-        sendToUser(winnerId, message);
-        sendToUser(loserId, message);
+        log.info("【WebSocket广播】游戏结束: gameId={}, winnerId={}, loserId={}", gameId, winnerId, loserId);
 
-        // 同时广播到游戏
+        // 直接发送给两个玩家（带重试机制）
+        sendToUserWithRetry(winnerId, message, 3);
+        sendToUserWithRetry(loserId, message, 3);
+
+        // 同时广播到游戏（作为备份通道）
         gameWebSocketHandler.broadcastToGame(gameId, message);
-
-        log.debug("通知游戏结束: gameId={}, winnerId={}, loserId={}", gameId, winnerId, loserId);
+        
+        // 延迟再次发送（确保对方收到）
+        scheduler.schedule(() -> {
+            log.info("【WebSocket广播】游戏结束消息延迟重发: gameId={}", gameId);
+            sendToUser(winnerId, message);
+            sendToUser(loserId, message);
+        }, 2, TimeUnit.SECONDS);
     }
 
     /**

@@ -130,10 +130,35 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
             case PLAYER_GIVE_UP:
                 handleGiveUp(userId, message);
                 break;
+            case MESSAGE_ACK:
+                handleMessageAck(userId, message);
+                break;
             default:
                 log.warn("【WebSocket消息】未处理的消息类型: {}", type);
                 sendErrorMessage(session, "未知消息类型: " + type);
         }
+    }
+    
+    /**
+     * 处理消息确认
+     */
+    private void handleMessageAck(String userId, WebSocketMessage message) {
+        Map<String, Object> data = message.getData();
+        if (data == null) {
+            log.warn("【WebSocket消息】ACK消息缺少data: userId={}", userId);
+            return;
+        }
+        
+        String messageId = data.get("messageId") != null ? data.get("messageId").toString() : null;
+        if (messageId == null) {
+            log.warn("【WebSocket消息】ACK消息缺少messageId: userId={}", userId);
+            return;
+        }
+        
+        log.debug("【WebSocket消息】收到消息确认: userId={}, messageId={}", userId, messageId);
+        
+        // 转发到WebSocketService处理确认
+        gameService.handleMessageAck(userId, messageId);
     }
 
     private void handleConnect(WebSocketSession session, String userId, WebSocketMessage message) throws IOException {

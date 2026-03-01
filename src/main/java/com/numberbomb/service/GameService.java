@@ -24,6 +24,13 @@ public class GameService {
     private final RedisTemplate<String, Object> redisTemplate;
     private final WebSocketService webSocketService;
     
+    /**
+     * 处理消息确认
+     */
+    public void handleMessageAck(String userId, String messageId) {
+        webSocketService.handleMessageAck(userId, messageId);
+    }
+    
     @Transactional
     public Map<String, Object> startGame(Long roomId, Long userId) {
         System.out.println("🎮 开始游戏: roomId=" + roomId + ", userId=" + userId);
@@ -156,6 +163,7 @@ public class GameService {
         gameState.put("gameType", "online");
         gameState.put("status", "playing");
         gameState.put("currentPlayer", firstPlayerId);
+        gameState.put("firstPlayer", firstPlayerId); // 记录先手玩家，用于前端颜色区分
         gameState.put("countdown", 180); // 3分钟 = 180秒
         gameState.put("players", playerList);
         gameState.put("history", new ArrayList<>());

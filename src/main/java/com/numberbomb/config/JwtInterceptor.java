@@ -30,12 +30,13 @@ public class JwtInterceptor implements HandlerInterceptor {
             return true;
         }
         
-        // 房间和游戏相关接口允许未登录访问（使用临时用户）
+        // 房间、游戏、用户相关接口允许未登录访问（使用临时用户）
         // 使用startsWith匹配，更灵活
         boolean isRoomApi = path.startsWith("/api/room/");
         boolean isGameApi = path.startsWith("/api/game/");
+        boolean isUserApi = path.startsWith("/api/user/");
         
-        if (isRoomApi || isGameApi) {
+        if (isRoomApi || isGameApi || isUserApi) {
             // 尝试获取token
             String authHeader = request.getHeader("Authorization");
             Long userId = null;
