@@ -11,6 +11,8 @@ server:
     key-alias: numberbomb
 
 spring:
+  profiles:
+    include: trtc
   application:
     name: number-bomb-backend
   
