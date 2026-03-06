@@ -11,6 +11,8 @@ server:
     key-alias: numberbomb
 
 spring:
+  profiles:
+    include: trtc  # 引入 trtc 这个 profile 对应的配置
   application:
     name: number-bomb-backend
   
