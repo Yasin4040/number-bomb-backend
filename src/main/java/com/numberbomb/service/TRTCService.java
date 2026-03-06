@@ -85,7 +85,7 @@ public class TRTCService {
             System.out.println("[TRTC]   UserId: " + userId);
             System.out.println("[TRTC]   UserSig: " + userSig);
             System.out.println("[TRTC]   SecretKey length: " + (secretKey != null ? secretKey.length() : 0));
-            log.debug("生成 UserSig 成功: userId={}, sigLength={}", userId, userSig.length());
+            log.debug("生成 UserSig 成功: userId={}, sigLength={}", userId, userSig);
             return userSig;
         } catch (Exception e) {
             log.error("生成 UserSig 失败: {}", e.getMessage(), e);
