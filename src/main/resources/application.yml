@@ -87,11 +87,6 @@ game:
   countdown:
     seconds: 15
 
-# TRTC配置 - 使用单行格式，包含换行符
-trtc:
-  sdkAppId: 1600129089
-  secretKey: 070feb6236ca09a148a68109512a117c5603b681ae5d9d03ca1862f95b51cedf
-  expireTime: 86400  # 签名过期时间（秒）
 
 # 管理端点
 management:
