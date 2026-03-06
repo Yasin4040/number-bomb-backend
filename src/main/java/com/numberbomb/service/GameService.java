@@ -87,7 +87,13 @@ public class GameService {
         // 创建新的游戏记录（猜数字模式）
         GameRecord gameRecord = new GameRecord();
         gameRecord.setRoomId(roomId);
-        gameRecord.setGameType(2); // 在线房间
+        // 根据房间类型设置 gameType：1-本地，2-在线房间，3-随机匹配，4-语音对战
+        Integer roomType = room.getRoomType();
+        if (roomType != null && roomType == 2) {
+            gameRecord.setGameType(4); // 语音对战
+        } else {
+            gameRecord.setGameType(2); // 普通在线房间
+        }
         gameRecord.setStartedAt(LocalDateTime.now());
         gameRecord.setPlayer1Id(players.get(0).getUserId());
         gameRecord.setPlayer2Id(players.get(1).getUserId());

@@ -80,6 +80,12 @@ game:
   countdown:
     seconds: 15
 
+# TRTC配置
+trtc:
+  sdkAppId: ${TRTC_SDK_APP_ID:1600129089}
+  secretKey: ${TRTC_SECRET_KEY:070feb6236ca09a148a68109512a117c5603b681ae5d9d03ca1862f95b51cedf}
+  expireTime: 86400  # 签名过期时间（秒）
+
 # 管理端点
 management:
   endpoints:

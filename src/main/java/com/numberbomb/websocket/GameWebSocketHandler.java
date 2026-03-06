@@ -13,16 +13,14 @@ import org.springframework.web.socket.handler.TextWebSocketHandler;
 import java.io.IOException;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
-import java.util.Base64;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArraySet;
 
 /**
  * 原生 WebSocket 处理器
  * 统一处理所有 WebSocket 消息，管理用户 session
+ * 支持普通对战和语音对战
  * 移除 STOMP 支持，避免双协议冲突
  */
 @Slf4j
@@ -48,6 +46,9 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
 
     // 存储游戏订阅: gameId -> Set<userId>
     private final Map<Long, Set<String>> gameSubscriptions = new ConcurrentHashMap<>();
+
+    // 存储语音对战房间准备状态: roomId -> Set<userId>
+    private final Map<Long, Set<String>> voiceRoomReadyStatus = new ConcurrentHashMap<>();
 
     @Override
     public void afterConnectionEstablished(WebSocketSession session) throws Exception {
@@ -112,23 +113,39 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         log.info("【WebSocket消息】处理消息: userId={}, type={}", userId, type);
 
         switch (type) {
+            // 连接相关
             case CONNECT:
                 handleConnect(session, userId, message);
                 break;
             case DISCONNECT:
                 handleDisconnect(userId, message);
                 break;
+                
+            // 普通游戏相关
             case PLAYER_MAKE_GUESS:
                 handleGuess(userId, message);
+                break;
+            case PLAYER_GIVE_UP:
+                handleGiveUp(userId, message);
                 break;
             case GAME_STATE_SYNC:
                 handleGameStateSync(session, userId, message);
                 break;
+                
+            // 语音对战相关（复用普通对战逻辑）
+            case VOICE_PLAYER_READY:
+                handleVoicePlayerReady(userId, message);
+                break;
+            case VOICE_GUESS_MADE:
+                handleVoiceGuess(userId, message);
+                break;
+            case VOICE_GAME_OVER:
+                handleVoiceGameOver(userId, message);
+                break;
+                
+            // 心跳
             case PING:
                 handlePing(session);
-                break;
-            case PLAYER_GIVE_UP:
-                handleGiveUp(userId, message);
                 break;
             case MESSAGE_ACK:
                 handleMessageAck(userId, message);
@@ -137,6 +154,153 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
                 log.warn("【WebSocket消息】未处理的消息类型: {}", type);
                 sendErrorMessage(session, "未知消息类型: " + type);
         }
+    }
+    
+    /**
+     * 处理语音对战玩家准备 - 检查双方都准备好后触发倒计时
+     */
+    private void handleVoicePlayerReady(String userId, WebSocketMessage message) {
+        Map<String, Object> data = message.getData();
+        if (data == null) return;
+
+        Long roomId = parseLong(data.get("roomId"));
+        Boolean ready = (Boolean) data.getOrDefault("ready", true);
+        if (roomId == null) return;
+
+        log.info("【语音对战】用户 {} 准备状态变更: ready={}, roomId={}", userId, ready, roomId);
+        
+        // 更新准备状态
+        Set<String> readyUsers = voiceRoomReadyStatus.computeIfAbsent(roomId, k -> new CopyOnWriteArraySet<>());
+        if (ready) {
+            readyUsers.add(userId);
+        } else {
+            readyUsers.remove(userId);
+        }
+        
+        // 广播给房间内其他玩家
+        broadcastToRoom(roomId, WebSocketMessage.builder()
+                .type(WebSocketMessage.MessageType.VOICE_OPPONENT_READY)
+                .data(Map.of("userId", userId, "ready", ready, "roomId", roomId))
+                .timestamp(System.currentTimeMillis())
+                .build(), userId);
+        
+        // 检查是否双方都准备了（房间内有2个人且都准备了）
+        Set<String> roomUsers = roomSubscriptions.get(roomId);
+        if (roomUsers != null && readyUsers.size() >= 2 && roomUsers.size() >= 2) {
+            log.info("【语音对战】房间 {} 双方都已准备，开始倒计时", roomId);
+            
+            // 广播倒计时给房间内所有人（复用普通对战的 ROOM_START_COUNTDOWN）
+            broadcastToRoom(roomId, WebSocketMessage.builder()
+                    .type(WebSocketMessage.MessageType.ROOM_START_COUNTDOWN)
+                    .data(Map.of("roomId", roomId, "countdown", 3))
+                    .timestamp(System.currentTimeMillis())
+                    .build());
+            
+            // 3秒后广播游戏开始（复用普通对战的 ROOM_GAME_STARTED）
+            new Thread(() -> {
+                try {
+                    Thread.sleep(3000);
+                    broadcastToRoom(roomId, WebSocketMessage.builder()
+                            .type(WebSocketMessage.MessageType.ROOM_GAME_STARTED)
+                            .data(Map.of("roomId", roomId, "startTime", System.currentTimeMillis()))
+                            .timestamp(System.currentTimeMillis())
+                            .build());
+                    // 清空准备状态
+                    voiceRoomReadyStatus.remove(roomId);
+                } catch (InterruptedException e) {
+                    log.error("语音对战倒计时线程中断", e);
+                }
+            }).start();
+        }
+    }
+    
+    /**
+     * 处理语音对战猜测 - 复用普通对战的 handleGuess 逻辑
+     */
+    private void handleVoiceGuess(String userId, WebSocketMessage message) {
+        Map<String, Object> data = message.getData();
+        if (data == null) return;
+
+        Long gameId = parseLong(data.get("gameId"));
+        String guess = (String) data.get("guess");
+        
+        if (gameId == null || guess == null) return;
+
+        log.info("【语音对战】用户 {} 提交猜测: {}, gameId={}", userId, guess, gameId);
+        
+        try {
+            // 复用普通对战的猜测处理逻辑
+            var result = gameService.makeGuess(gameId, parseLong(userId), guess);
+            
+            // 广播猜测结果给所有订阅者（复用普通对战的 GAME_GUESS_RESULT）
+            broadcastToGame(gameId, WebSocketMessage.builder()
+                    .type(WebSocketMessage.MessageType.GAME_GUESS_RESULT)
+                    .data(Map.of(
+                        "gameId", gameId,
+                        "playerId", userId,
+                        "guess", guess,
+                        "result", result
+                    ))
+                    .timestamp(System.currentTimeMillis())
+                    .build());
+            
+            // 检查是否猜中（4A），结束游戏
+            //  response.put("result", result);
+            //        response.put("nextPlayer", gameState.get("currentPlayer"));
+            //        response.put("isGameOver", isGameOver);
+            if (Objects.equals(result.get("isGameOver"), true)) {
+                handleVoiceGameWin(gameId, userId);
+            }
+        } catch (Exception e) {
+            log.error("【语音对战】处理猜测失败: {}", e.getMessage());
+            sendMessageToUser(userId, WebSocketMessage.error("处理猜测失败: " + e.getMessage()));
+        }
+    }
+    
+    /**
+     * 处理语音对战游戏胜利 - 复用普通对战的 GAME_ENDED
+     */
+    private void handleVoiceGameWin(Long gameId, String winnerId) {
+        log.info("【语音对战】游戏结束, 获胜者: {}, gameId={}", winnerId, gameId);
+        
+        // 获取游戏状态
+        var gameState = gameService.getGameStatus(gameId, parseLong(winnerId));
+        
+        // 广播游戏结束（复用普通对战的 GAME_ENDED）
+        broadcastToGame(gameId, WebSocketMessage.builder()
+                .type(WebSocketMessage.MessageType.GAME_ENDED)
+                .data(Map.of(
+                    "gameId", gameId,
+                    "winnerId", winnerId,
+                    "gameState", gameState
+                ))
+                .timestamp(System.currentTimeMillis())
+                .build());
+    }
+    
+    /**
+     * 处理语音对战游戏结束
+     */
+    private void handleVoiceGameOver(String userId, WebSocketMessage message) {
+        Map<String, Object> data = message.getData();
+        if (data == null) return;
+
+        Long gameId = parseLong(data.get("gameId"));
+        String winnerId = (String) data.get("winnerId");
+        
+        if (gameId == null) return;
+
+        log.info("【语音对战】游戏结束, 获胜者: {}, gameId={}", winnerId, gameId);
+        
+        // 广播游戏结束（复用普通对战的 GAME_ENDED）
+        broadcastToGame(gameId, WebSocketMessage.builder()
+                .type(WebSocketMessage.MessageType.GAME_ENDED)
+                .data(Map.of(
+                    "gameId", gameId,
+                    "winnerId", winnerId
+                ))
+                .timestamp(System.currentTimeMillis())
+                .build());
     }
     
     /**
@@ -426,6 +590,13 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
      * 广播消息给房间的所有玩家
      */
     public void broadcastToRoom(Long roomId, WebSocketMessage message) {
+        broadcastToRoom(roomId, message, null);
+    }
+    
+    /**
+     * 广播消息给房间的所有玩家（可排除特定用户）
+     */
+    public void broadcastToRoom(Long roomId, WebSocketMessage message, String excludeUserId) {
         Set<String> subscribers = roomSubscriptions.get(roomId);
         if (subscribers == null || subscribers.isEmpty()) {
             log.warn("【WebSocket广播】房间 {} 没有订阅者", roomId);
@@ -435,7 +606,9 @@ public class GameWebSocketHandler extends TextWebSocketHandler {
         log.info("【WebSocket广播】广播消息到房间 {}: {}, 订阅者数量: {}", roomId, message.getType(), subscribers.size());
         
         for (String userId : subscribers) {
-            sendMessageToUser(userId, message);
+            if (!userId.equals(excludeUserId)) {
+                sendMessageToUser(userId, message);
+            }
         }
     }
 

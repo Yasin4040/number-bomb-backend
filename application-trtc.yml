@@ -1,0 +1,18 @@
+# TRTC配置
+# 方式1：使用环境变量（推荐用于生产环境）
+# 方式2：直接填写值（推荐用于开发环境）
+
+trtc:
+  # 方式1：从环境变量读取
+  # sdkAppId: ${TRTC_SDK_APP_ID:1600129089}
+  # secretKey: ${TRTC_SECRET_KEY:}
+  
+  # 方式2：直接填写（当前使用）
+  sdkAppId: 1600129089
+  secretKey: |
+    -----BEGIN PRIVATE KEY-----
+    MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg4nLIwt3aBlFreTXR
+    07LFvTC7V92z+TSOCdAzx9Q1GV6hRANCAATReT4yknWi72cynM16a4PYNfEkmEJH
+    6svkBmV0ynJreeVsy920AcG/uIyvdmHbeA/GCOet7kUYmQ24dGlD/x11
+    -----END PRIVATE KEY-----
+  expireTime: 86400  # 签名过期时间（秒）

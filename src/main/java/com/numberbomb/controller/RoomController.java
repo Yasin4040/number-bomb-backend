@@ -2,12 +2,14 @@ package com.numberbomb.controller;
 
 import com.numberbomb.dto.CreateRoomDTO;
 import com.numberbomb.service.RoomService;
+import com.numberbomb.service.TRTCService;
 import com.numberbomb.utils.TempUserUtil;
 import com.numberbomb.vo.Result;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.HashMap;
 import java.util.Map;
 
 @RestController
@@ -16,6 +18,7 @@ import java.util.Map;
 public class RoomController {
     
     private final RoomService roomService;
+    private final TRTCService trtcService;
     
     @PostMapping("/create")
     public Result<?> createRoom(@RequestBody CreateRoomDTO dto, HttpServletRequest request) {
@@ -269,6 +272,58 @@ public class RoomController {
         }
         
         return Result.success(activeRoom);
+    }
+    
+    /**
+     * 获取 TRTC 语音配置
+     * 用于语音对战时前端初始化 TRTC SDK
+     */
+    @GetMapping("/trtc-config")
+    public Result<?> getTRTCConfig(@RequestParam Long roomId, HttpServletRequest request) {
+        Long userId = (Long) request.getAttribute("userId");
+        String tempUserId = (String) request.getAttribute("tempUserId");
+        
+        // 如果是临时用户，先获取或创建用户
+        if (userId == null && tempUserId != null && !tempUserId.isEmpty()) {
+            try {
+                userId = roomService.getOrCreateTempUser(tempUserId, request);
+            } catch (Exception e) {
+                System.err.println("创建临时用户失败: " + e.getMessage());
+                return Result.error(500, "创建临时用户失败: " + e.getMessage());
+            }
+        }
+        
+        if (userId == null) {
+            return Result.error(401, "无法获取用户ID");
+        }
+        
+        // 检查房间是否存在
+        Map<String, Object> roomInfo = roomService.getRoomInfo(roomId, userId);
+        if (roomInfo == null || roomInfo.get("room") == null) {
+            return Result.error(404, "房间不存在");
+        }
+        
+        // 获取 SDKAppId
+        long sdkAppId = trtcService.getSdkAppId();
+        if (sdkAppId == 0) {
+            return Result.error(500, "TRTC 未配置，请联系管理员");
+        }
+        
+        // 生成 UserSig
+        String userSig = trtcService.generateUserSig(userId.toString());
+        if (userSig == null || userSig.isEmpty()) {
+            return Result.error(500, "生成 UserSig 失败");
+        }
+        
+        // 返回配置
+        Map<String, Object> config = new HashMap<>();
+        config.put("sdkAppId", sdkAppId);
+        config.put("userSig", userSig);
+        config.put("roomId", roomId);
+        config.put("userId", userId);
+        
+        System.out.println("✅ [RoomController] 生成 TRTC 配置成功: roomId=" + roomId + ", userId=" + userId);
+        return Result.success(config);
     }
     
     @lombok.Data

@@ -18,7 +18,7 @@ public class GameRecord {
     
     private Long roomId; // 房间ID（在线房间模式）
     
-    private Integer gameType; // 1本地 2在线房间 3随机匹配
+    private Integer gameType; // 1本地 2在线房间 3随机匹配 4在线语音对战
     
     private Long player1Id; // 玩家1 ID
     

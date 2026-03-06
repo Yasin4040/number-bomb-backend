@@ -12,6 +12,8 @@ import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.serializer.GenericJackson2JsonRedisSerializer;
 import org.springframework.data.redis.serializer.StringRedisSerializer;
 
+import java.util.Objects;
+
 @Configuration
 public class RedisConfig {
     
@@ -34,7 +36,7 @@ public class RedisConfig {
         RedisStandaloneConfiguration config = new RedisStandaloneConfiguration();
         config.setHostName(redisHost);
         config.setPort(redisPort);
-        if (redisPassword != null && !redisPassword.isEmpty()) {
+        if (!Objects.equals(redisHost, "localhost") && redisPassword != null && !redisPassword.isEmpty()) {
             config.setPassword(redisPassword);
         }
         config.setDatabase(redisDatabase);

@@ -37,6 +37,11 @@ public class Room {
     @TableLogic
     private Integer deleted;
     
+    /**
+     * 房间类型：1-普通对战，2-语音对战
+     */
+    private Integer roomType;
+    
     // 以下字段已废弃（数字炸弹模式，猜数字游戏不再使用，但保留以兼容数据库）
     // private Integer minRange;
     // private Integer maxRange;

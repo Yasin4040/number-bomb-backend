@@ -98,6 +98,12 @@ public class WebSocketMessage implements Serializable {
         ROOM_START_COUNTDOWN,     // 开始倒计时
         ROOM_GAME_STARTED,        // 游戏开始
         ROOM_UPDATED,             // 房间信息更新
+        
+        // 语音对战相关（复用普通对战逻辑）
+        VOICE_PLAYER_READY,       // 语音对战玩家准备（触发倒计时）
+        VOICE_GUESS_MADE,         // 语音对战猜测提交
+        VOICE_GAME_OVER,          // 语音对战游戏结束
+        VOICE_OPPONENT_READY,
 
         // 匹配相关
         MATCH_SUCCESS,            // 匹配成功

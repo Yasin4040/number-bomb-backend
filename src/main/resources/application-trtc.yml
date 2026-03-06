@@ -1,0 +1,7 @@
+# TRTC配置 - 单独配置文件
+# 请将私钥内容完整复制到下面，保持格式
+
+trtc:
+  sdkAppId: 1600129089
+  secretKey: "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg4nLIwt3aBlFreTXR\n07LFvTC7V92z+TSOCdAzx9Q1GV6hRANCAATReT4yknWi72cynM16a4PYNfEkmEJH\n6svkBmV0ynJreeVsy920AcG/uIyvdmHbeA/GCOet7kUYmQ24dGlD/xEq\n-----END PRIVATE KEY-----"
+  expireTime: 86400

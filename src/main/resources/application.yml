@@ -2,6 +2,13 @@ server:
   port: 8888
   servlet:
     context-path: /
+  # SSL 配置（用于局域网 HTTPS 开发测试）
+  ssl:
+    enabled: true
+    key-store: classpath:keystore.p12
+    key-store-password: numberbomb
+    key-store-type: PKCS12
+    key-alias: numberbomb
 
 spring:
   application:
@@ -18,11 +25,11 @@ spring:
       idle-timeout: 300000
       max-lifetime: 1200000
       connection-timeout: 20000
-  
+
   redis:
-    host: ${REDIS_HOST:120.27.196.197}
+    host: ${REDIS_HOST:localhost}
     port: ${REDIS_PORT:6379}
-    password: ${REDIS_PASSWORD:li3301359}
+    password: ${REDIS_PASSWORD:3301359a}
     database: 0
     timeout: 5000
     lettuce:
@@ -79,6 +86,12 @@ game:
     timeout-seconds: 60
   countdown:
     seconds: 15
+
+# TRTC配置 - 使用单行格式，包含换行符
+trtc:
+  sdkAppId: 1600129089
+  secretKey: 070feb6236ca09a148a68109512a117c5603b681ae5d9d03ca1862f95b51cedf
+  expireTime: 86400  # 签名过期时间（秒）
 
 # 管理端点
 management:

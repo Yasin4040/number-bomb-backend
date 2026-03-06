@@ -20,6 +20,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDateTime;
 import java.util.*;
 import java.util.Random;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
@@ -201,6 +202,8 @@ public class RoomService {
         room.setPunishmentContent(dto.getPunishmentContent());
         room.setStatus(0); // 等待中
         room.setExpiredAt(LocalDateTime.now().plusMinutes(expireMinutes));
+        // 设置房间类型：1-普通对战，2-语音对战
+        room.setRoomType(dto.getRoomType() != null ? dto.getRoomType() : 1);
         roomMapper.insert(room);
         
         // 检查房间ID是否生成成功
@@ -551,6 +554,8 @@ public class RoomService {
         map.put("punishmentContent", room.getPunishmentContent());
         map.put("status", room.getStatus());
         map.put("expiredAt", room.getExpiredAt());
+        // 房间类型：1-普通对战，2-语音对战
+        map.put("roomType", room.getRoomType() != null ? room.getRoomType() : 1);
         return map;
     }
     
